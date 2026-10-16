@@ -1,0 +1,53 @@
+leader:
+  port: /dev/serial/by-id/usb-1a86_USB_Single_Serial_5A7C119175-if00   # = /dev/ttyACM0
+  calibration_file: calibration/main_leader.json   # lerobot SO101 leader calibration (relative = project dir)
+  urdf: urdf/so101_new_calib.urdf
+  base_link: base_link
+  ee_link: gripper_frame_link
+  fake: false
+  viz_offset_xyz: [0.0, 0.7, 0.0]     # where the leader model is drawn in RViz (relative to panda_link0)
+
+franka:
+  group: panda_arm
+  base_frame: panda_link0
+  ee_link: panda_hand_tcp
+  joint_names: [panda_joint1, panda_joint2, panda_joint3, panda_joint4, panda_joint5, panda_joint6, panda_joint7]
+  joint_states_topic: /joint_states
+  trajectory_topic: /panda_arm_controller/joint_trajectory
+  robot_state_topic: /franka_robot_state_broadcaster/robot_state   # real robot only (watchdog)
+  robot_state_timeout: 0.2       # s, robot clock not advancing this long = control loop dead
+  home_joints: [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
+  home_velocity_scaling: 0.1
+  joint_lower_limits: [-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973]
+  joint_upper_limits: [ 2.8973,  1.7628,  2.8973, -0.0698,  2.8973,  3.7525,  2.8973]
+
+control:
+  rate_hz: 30.0
+  position_scale: 1.5            # franka metres per leader metre
+  track_orientation: true        # 'r' toggles; off = keep franka TCP orientation fixed
+  rotation_scale: 1.0
+  leader_to_franka_rpy: [0.0, 0.0, 0.0]   # rotation of leader base frame into franka base frame (both x fwd, z up)
+  leader_filter_alpha: 0.35      # EMA on the leader EE pose (1 = no filtering)
+  max_lin_vel: 0.15              # m/s, rate limit on the commanded TCP
+  max_ang_vel: 0.6               # rad/s
+  max_joint_step: 0.25           # rad, reject IK solutions that jump more than this from the last one
+  trajectory_lookahead: 0.15     # s, time_from_start of each streamed joint target
+  ik_timeout: 0.02               # s
+  avoid_collisions: true
+  joint_limit_margin: 0.2        # rad, IK solutions closer than this to a joint limit are rejected (hold)
+  workspace_min: [0.30, -0.55, 0.10]   # TCP box in panda_link0 (m)
+  workspace_max: [0.75,  0.55, 0.80]
+
+gripper:
+  enabled: true                  # 'g' toggles; only acts while ENGAGED
+  grasp_action: /panda_gripper/grasp
+  move_action: /panda_gripper/move
+  invert: false                  # set true if the leader reports 0 = open, 1 = closed
+  close_below: 0.25              # leader gripper opening (0..1): below -> GRASP
+  open_above: 0.45               #                               above -> OPEN  (hysteresis band between)
+  open_width: 0.08               # m, total finger opening when opening (Franka hand max 0.08)
+  speed: 0.1                     # m/s finger speed
+  grasp_width: 0.0               # m, nominal grasp width ...
+  grasp_epsilon_inner: 0.005     # ... accepted object width is [grasp_width - inner, grasp_width + outer]
+  grasp_epsilon_outer: 0.08      #     = 0..8 cm, i.e. any object counts as grasped
+  grasp_force: 20.0              # N
