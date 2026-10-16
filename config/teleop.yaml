@@ -68,7 +68,7 @@ gamepad:
     pitch: 3                     # right stick up/down    -> rotate about base y
     z_up: 4                      # L2 trigger
     z_down: 5                    # R2 trigger
-  sign: {x: 1.0, y: -1.0, yaw: 1.0, pitch: -1.0}   # flip a direction here
+  sign: {x: -1.0, y: -1.0, yaw: 1.0, pitch: -1.0}   # flip a direction here
   buttons:
     engage: 6                    # OPTIONS  engage / pause
     home: 4                      # CREATE   MoveIt to the ready pose

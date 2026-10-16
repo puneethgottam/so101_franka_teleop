@@ -84,7 +84,7 @@ workspace box, MoveIt IK, joint-limit/jump checks and the robot watchdog are the
 | Control | Action |
 |---|---|
 | `OPTIONS` | engage / pause (keyboard `SPACE` also works) |
-| left stick up / down | move forward / back: away from / towards the base (x) |
+| left stick up / down | move towards / away from the base (x, inverted with `sign.x: -1`) |
 | left stick left / right | move sideways: towards -y / +y (y, inverted with `sign.y: -1`) |
 | `L2` / `R2` | move up / down (z); analog, press harder to go faster |
 | right stick left / right | yaw: rotate the gripper about the vertical axis |
@@ -135,15 +135,21 @@ xyz + quaternion (xyzw), `action` = 7 commanded joints + gripper command (1 gras
 `action.ee_pose` = commanded TCP pose, and one image per camera. While teleop is paused the action
 equals the measured state. Raw episodes go to `data/raw/episode_NNNNNN/`.
 
-**Cameras**: add them under `cameras:` in `config/record.yaml`, e.g. for an Orbbec
-(`ros2 launch orbbec_camera gemini_330_series.launch.py`, use your model's launch file):
+**Cameras**: listed under `cameras:` in `config/record.yaml`. A USB camera is read directly
+with OpenCV (`device:`); a camera with a ROS driver is read from its image topic (`topic:`). The
+`front` camera (HDMI/USB capture, scene view) is configured: 1280x720 MJPG at 30 fps, saved at 640x360.
 ```yaml
 cameras:
   - name: front
-    topic: /camera/color/image_raw
+    device: /dev/v4l/by-id/usb-HDMI_3.0_USB_Camera_HDMI_USB_Camera_2023121018-video-index0
+    capture_width: 1280
+    capture_height: 720
     width: 640
-    height: 480
+    height: 360
+  - name: wrist                            # e.g. Orbbec: ros2 launch orbbec_camera <model>.launch.py
+    topic: /camera/color/image_raw
 ```
+With a camera configured, recording only starts once it delivers frames.
 
 **Convert** (separate venv: lerobot needs numpy 2, ROS Jazzy needs numpy 1.26):
 ```bash
