@@ -5,11 +5,11 @@ tracking instead of joint mapping: the leader's EE pose (URDF forward kinematics
 relative to the moment you engage, solved with MoveIt IK (`/compute_ik`) and streamed to the
 `panda_arm_controller`. The leader gripper opens/closes the Franka Hand.
 
-Tested with ROS 2 Lyrical on Ubuntu 26.04 (PREEMPT_RT), franka_ros2 0.1.x, libfranka 0.9.2.
+Targets ROS 2 Jazzy (Ubuntu 24.04, PREEMPT_RT); originally tested with ROS 2 Lyrical on Ubuntu 26.04, franka_ros2 0.1.x, libfranka 0.9.2.
 
 ## Setup on a new PC
 
-Requirements: ROS 2 Lyrical with the Franka + MoveIt packages
+Requirements: ROS 2 Jazzy with the Franka + MoveIt packages
 (`franka_moveit_config`, `franka_hardware`, `franka_gripper`, `libfranka`, `pymoveit2`,
 `moveit_ros_move_group`, `parallel_gripper_controller`, `moveit_resources_panda_moveit_config`).
 
@@ -59,7 +59,100 @@ sudo prlimit --pid $$ --memlock=unlimited:unlimited      # in terminal 1, see be
 | `q` | quit |
 
 Services: `/so101_franka_teleop/engage` (SetBool), `/so101_franka_teleop/home` (Trigger).
+
 Terminal-1 output is saved to `logs/`.
+
+### PS5 controller instead of the leader
+
+```bash
+./run_teleop.sh --gamepad     # instead of ./run_teleop.sh; also starts joy's game_controller_node
+```
+Works with a DualSense over USB or Bluetooth (any SDL game controller should work). Instead of
+following the leader's pose, the sticks and triggers set a **velocity** for the Franka TCP: the arm
+moves while you hold a stick and stops when you let go. Directions are in the robot base frame
+(`panda_link0`): +x points away from the base, +y to the robot's left, +z up. Speed limits,
+workspace box, MoveIt IK, joint-limit/jump checks and the robot watchdog are the same as with the leader.
+
+**Typical use**
+1. Start the stack (terminal 1), then `./run_teleop.sh --gamepad` (terminal 2).
+2. Press `CREATE` to move to the ready pose, then `OPTIONS` to engage.
+3. Drive with the sticks and triggers; `CROSS` / `CIRCLE` to grasp / open.
+4. `OPTIONS` again to pause; the robot holds its last pose.
+
+**Controls**
+
+| Control | Action |
+|---|---|
+| `OPTIONS` | engage / pause (keyboard `SPACE` also works) |
+| left stick up / down | move forward / back: away from / towards the base (x) |
+| left stick left / right | move sideways: towards -y / +y (y, inverted with `sign.y: -1`) |
+| `L2` / `R2` | move up / down (z); analog, press harder to go faster |
+| right stick left / right | yaw: rotate the gripper about the vertical axis |
+| right stick up / down | pitch: tilt the gripper about the base y axis |
+| `L1` / `R1` | roll: rotate the gripper about the base x axis |
+| `TRIANGLE` | rotation control on / off (off = only position, orientation stays fixed) |
+| `CROSS` | close gripper (grasp, force controlled) |
+| `CIRCLE` | open gripper |
+| D-pad up / down | speed up / slow down: x1.5 / ÷1.5 per press, 10 %..100 % |
+| `CREATE` | home: MoveIt moves the arm to the ready pose (10 % speed); pauses teleop |
+| `SQUARE` | recorder: start episode / stop and save (needs `./run_recorder.sh`) |
+| D-pad left | recorder: discard the current episode |
+
+Full speed is `max_lin_vel` 0.10 m/s and `max_ang_vel` 0.5 rad/s. The current speed factor is
+printed in the terminal and on `/so101_franka_teleop/status`.
+
+**Notes**
+- **Holding still:** if a pose is out of reach (`IK failed (code -31)`) or outside the workspace box,
+  the arm stops at the last reachable pose. Move back the other way to recover. Poses close
+  to the base or with large rotations fail most often; turning rotation off (`TRIANGLE`) helps.
+- **Controller lost:** teleop pauses if the controller is unplugged / switched off or the joy node stops.
+- **Real robot:** press D-pad down a few times after engaging so the first moves are slow.
+
+**Changing the mapping:** everything is under `gamepad:` in `config/teleop.yaml`. `axes:` and
+`buttons:` hold the controller indices (check them with `ros2 topic echo /joy` while pressing), and
+`sign:` flips a direction (`x`, `y`, `yaw`, `pitch`). To flip up/down, swap `z_up` and `z_down`.
+Restart `./run_teleop.sh --gamepad` after editing.
+
+## Recording episodes (VLA / LeRobot data)
+
+A third terminal records episodes while you teleoperate; a converter turns them into a
+[LeRobot](https://github.com/huggingface/lerobot) dataset (parquet + mp4).
+
+```bash
+./run_recorder.sh --task "pick up the red cube"     # terminal 3
+```
+| Key | Action |
+|---|---|
+| `s` | start episode / stop and save |
+| `d` | discard the current episode |
+| `t` | type a new task (language instruction) |
+| `q` | quit (saves a running episode) |
+
+Services: `/so101_franka_recorder/start`, `/stop`, `/discard` (Trigger). Settings in `config/record.yaml`.
+
+Recorded per frame (30 Hz): `observation.state` = 7 joints + finger width, `observation.ee_pose` = TCP
+xyz + quaternion (xyzw), `action` = 7 commanded joints + gripper command (1 grasp / 0 open),
+`action.ee_pose` = commanded TCP pose, and one image per camera. While teleop is paused the action
+equals the measured state. Raw episodes go to `data/raw/episode_NNNNNN/`.
+
+**Cameras**: add them under `cameras:` in `config/record.yaml`, e.g. for an Orbbec
+(`ros2 launch orbbec_camera gemini_330_series.launch.py`, use your model's launch file):
+```yaml
+cameras:
+  - name: front
+    topic: /camera/color/image_raw
+    width: 640
+    height: 480
+```
+
+**Convert** (separate venv: lerobot needs numpy 2, ROS Jazzy needs numpy 1.26):
+```bash
+python3 -m venv .venv-lerobot
+.venv-lerobot/bin/pip install --extra-index-url https://download.pytorch.org/whl/cpu "lerobot[dataset]"
+tools/to_lerobot.sh data/raw --repo-id <hf_user>/franka_pick --root data/lerobot/franka_pick   # --overwrite, --push
+```
+Paused frames at the start/end of each episode are trimmed (`--keep-paused` keeps them) and each
+episode is resampled onto an exact 1/fps grid.
 
 ## How it works
 
@@ -83,6 +176,8 @@ All tuning is in `config/teleop.yaml` (scale, speeds, filter, workspace, gripper
 | `teleop_node.py` | the teleop ROS 2 node |
 | `so101_leader.py` | read-only Feetech bus reader + URDF forward kinematics |
 | `launch/franka_stack.launch.py` | wraps `franka_moveit_config/moveit.launch.py`, adds leader model, RViz, sim hand |
+| `recorder_node.py` | episode recorder (state, actions, camera images) -> `data/raw/` |
+| `tools/to_lerobot.py` | raw episodes -> LeRobot dataset |
 | `tools/sim_gripper.py` | simulated Franka Hand (move/grasp actions) for fake hardware |
 | `tools/franka_recover.cpp` | libfranka `automaticErrorRecovery()` + prints mode/last errors |
 | `urdf/` | SO101 URDF + meshes (TheRobotStudio `so101_new_calib.urdf`, matches lerobot calibration) |

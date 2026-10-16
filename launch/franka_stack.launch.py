@@ -86,9 +86,8 @@ def _setup(context: LaunchContext):
         # sim_gripper.py (franka-style move/grasp actions) drive it
         out.append(Node(
             package="controller_manager", executable="spawner", output="screen",
-            arguments=["panda_hand_controller", "--param-file", os.path.join(
-                get_package_share_directory("moveit_resources_panda_moveit_config"),
-                "config", "ros2_controllers.yaml")]))
+            arguments=["panda_hand_controller",
+                       "--param-file", str(HERE / "config" / "sim_hand_controller.yaml")]))
         out.append(ExecuteProcess(cmd=["python3", str(HERE / "tools" / "sim_gripper.py")],
                                   name="sim_gripper", output="screen"))
     if LaunchConfiguration("rviz").perform(context).lower() in ("true", "1"):

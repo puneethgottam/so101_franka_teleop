@@ -13,6 +13,10 @@ The Cartesian target is rate-limited, clipped to a workspace box, solved with
 MoveIt's /compute_ik service (collision-aware, seeded with the last solution),
 checked for joint jumps and streamed to the joint trajectory controller.
 
+With --gamepad (PS5 / any SDL game controller via joy's game_controller_node) the leader
+arm is replaced by velocity control: sticks/triggers move the commanded TCP, integrated from
+the last pose that passed IK (no wind-up at the workspace box or on IK failures).
+
 Keys (terminal):  SPACE engage/pause   r toggle orientation   h home (MoveIt plan)
                   g toggle gripper     q quit
 Service:          ~/engage  (std_srvs/SetBool)
@@ -41,8 +45,8 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallb
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
-from sensor_msgs.msg import JointState
-from std_msgs.msg import String
+from sensor_msgs.msg import JointState, Joy
+from std_msgs.msg import Float32, String
 from std_srvs.srv import SetBool, Trigger
 from tf2_ros import Buffer, StaticTransformBroadcaster, TransformListener
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -79,9 +83,12 @@ class TeleopNode(Node):
         self.cfg = cfg
         L, F, C = cfg["leader"], cfg["franka"], cfg["control"]
 
-        # ---------------- leader -----------------
+        # ---------------- leader / gamepad -----------------
+        self.gamepad = cfg["input"] == "gamepad"
         self.fk = UrdfChainFK(HERE / L["urdf"], L["base_link"], L["ee_link"])
-        if L.get("fake", False):
+        if self.gamepad:
+            self.leader = None
+        elif L.get("fake", False):
             self.leader = FakeLeader()
             self.get_logger().warning("Using FAKE leader (synthetic sinusoidal motion)")
         else:
@@ -131,6 +138,9 @@ class TeleopNode(Node):
         self.move_cli = ActionClient(self, Move, G["move_action"], callback_group=self.cb)
         self.gripper_closed = None
         self.gripper_busy = False
+        # last gripper command (1 = grasp, 0 = open) for the episode recorder
+        self.gripper_cmd_pub = self.create_publisher(Float32, "~/gripper_command", QoSProfile(
+            depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
         # visualisation: leader joint states + static TF so RViz can show the leader beside the robot
         self.leader_js_pub = self.create_publisher(JointState, "/leader/joint_states", 10)
@@ -162,13 +172,27 @@ class TeleopNode(Node):
         self.last_leader_T = None
         self.last_grip = 0.0
 
+        if self.gamepad:
+            P = cfg["gamepad"]
+            self.joy = None
+            self.joy_stamp = 0.0
+            self.joy_prev_buttons = []
+            self.speed = 1.0
+            self.create_subscription(Joy, P["topic"], self.on_joy, 10, callback_group=self.cb)
+
         self.create_service(SetBool, "~/engage", self.srv_engage, callback_group=self.cb)
         self.create_service(Trigger, "~/home", self.srv_home, callback_group=self.cb)
         self.create_timer(self.dt, self.loop, callback_group=self.loop_cb)
         self.publish_status()
-        self.get_logger().info(
-            f"Ready. PAUSED. scale={C['position_scale']} max_lin_vel={C['max_lin_vel']} m/s, "
-            f"orientation={'ON' if self.use_rotation else 'OFF'}. Press SPACE to engage.")
+        if self.gamepad:
+            P = cfg["gamepad"]
+            self.get_logger().info(
+                f"Ready (GAMEPAD on {P['topic']}). PAUSED. max {P['max_lin_vel']} m/s, {P['max_ang_vel']} rad/s, "
+                f"orientation={'ON' if self.use_rotation else 'OFF'}. OPTIONS or SPACE to engage.")
+        else:
+            self.get_logger().info(
+                f"Ready. PAUSED. scale={C['position_scale']} max_lin_vel={C['max_lin_vel']} m/s, "
+                f"orientation={'ON' if self.use_rotation else 'OFF'}. Press SPACE to engage.")
 
     # ------------------------------------------------------------------ io
     def on_joint_state(self, msg):
@@ -215,6 +239,8 @@ class TeleopNode(Node):
         s = "ENGAGED" if self.engaged else ("HOMING" if self.homing else "PAUSED")
         s += f" | orientation={'on' if self.use_rotation else 'off'}"
         s += f" | gripper={'on' if self.gripper_enabled else 'off'}"
+        if self.gamepad:
+            s += f" | gamepad speed={self.speed:.2f}"
         self.status_pub.publish(String(data=s))
 
     # ------------------------------------------------------------- engage
@@ -239,20 +265,23 @@ class TeleopNode(Node):
             if self.q_meas is None or time.monotonic() - self.q_meas_stamp > 0.5:
                 self.get_logger().error("No fresh joint states - not engaging")
                 return False, "no joint states"
-            if self.last_leader_T is None:
+            if self.gamepad and not self.joy_fresh():
+                return False, "no gamepad data"
+            if not self.gamepad and self.last_leader_T is None:
                 return False, "no leader data"
             try:
                 self.T_F0 = self.lookup_franka_ee()
             except Exception as e:  # noqa: BLE001
                 self.get_logger().error(f"TF {self.base_frame}->{self.ee_link} unavailable: {e}")
                 return False, "no tf"
-            self.T_L0 = self.last_leader_T.copy()
+            self.T_L0 = None if self.gamepad else self.last_leader_T.copy()
             self.T_cmd = self.T_F0.copy()
             self.q_seed = self.q_meas.copy()
             self.ik_fail_count = 0
             self.engaged = True
             self.publish_status()
-            self.get_logger().info("ENGAGED - Franka follows leader EE motion")
+            self.get_logger().info("ENGAGED - Franka follows the "
+                                   + ("gamepad" if self.gamepad else "leader EE motion"))
             return True, "engaged"
 
     # --------------------------------------------------------------- loop
@@ -265,6 +294,9 @@ class TeleopNode(Node):
         elif not problem and not self.robot_was_ok:
             self.get_logger().info("Robot state is live again")
         self.robot_was_ok = problem is None
+        if self.gamepad:
+            self.gamepad_step()
+            return
         try:
             joints, grip = self.leader.read()
         except IOError as e:
@@ -315,6 +347,97 @@ class TeleopNode(Node):
             T_next[:3, 3] = self.T_cmd[:3, 3] + step
             T_next[:3, :3] = rotvec_to_matrix(rv) @ self.T_cmd[:3, :3]
 
+            self.publish_target(T_next)
+            self.request_ik(T_next)
+
+    # ------------------------------------------------------------ gamepad
+    def on_joy(self, msg):
+        self.joy = msg
+        self.joy_stamp = time.monotonic()
+
+    def joy_fresh(self):
+        """Gamepad input is valid. game_controller_node only republishes when the controller sends no
+        events, so a stick held steady (jitter events, unchanged value) produces no /joy messages:
+        silence still counts as 'last message holds' while the joy node runs and the controller is
+        attached. Unplugged controller or dead joy node -> not fresh."""
+        if self.joy is None:
+            return False
+        P = self.cfg["gamepad"]
+        if time.monotonic() - self.joy_stamp < P["timeout"]:
+            return True
+        return self.count_publishers(P["topic"]) > 0 and self.controller_attached()
+
+    def controller_attached(self):
+        try:
+            return self.cfg["gamepad"]["device_name"].lower() in Path("/proc/bus/input/devices").read_text().lower()
+        except OSError:
+            return False
+
+    def joy_axis(self, i):
+        a = self.joy.axes
+        return float(a[i]) if 0 <= i < len(a) else 0.0
+
+    def joy_trigger(self, i):
+        """Trigger press 0..1 (game_controller_node, DualSense: 0.0 released, -1.0 fully pressed)."""
+        return float(np.clip(-self.joy_axis(i), 0.0, 1.0))
+
+    def joy_pressed(self, name):
+        """True on the rising edge of the named button."""
+        i = self.cfg["gamepad"]["buttons"][name]
+        b, prev = self.joy.buttons, self.joy_prev_buttons
+        return 0 <= i < len(b) and b[i] and not (i < len(prev) and prev[i])
+
+    def gamepad_step(self):
+        P = self.cfg["gamepad"]
+        if not self.joy_fresh():
+            if self.engaged:
+                self.get_logger().error("Gamepad lost (controller disconnected or joy node stopped) - PAUSED")
+                self.set_engaged(False)
+            return
+        # buttons (rising edges)
+        if self.joy_pressed("engage"):
+            self.set_engaged(not self.engaged)
+        if self.joy_pressed("home"):
+            self.go_home()
+        if self.joy_pressed("orientation"):
+            self.use_rotation = not self.use_rotation
+            self.get_logger().info(f"Orientation control {'ON' if self.use_rotation else 'OFF'}")
+            self.publish_status()
+        for name, f in (("speed_up", 1.5), ("speed_down", 1 / 1.5)):
+            if self.joy_pressed(name):
+                self.speed = float(np.clip(self.speed * f, 0.1, 1.0))
+                self.get_logger().info(f"Gamepad speed {self.speed:.2f}")
+                self.publish_status()
+        if self.gripper_enabled and self.engaged:
+            if self.joy_pressed("grasp"):
+                self.command_gripper(True)
+            elif self.joy_pressed("open"):
+                self.command_gripper(False)
+        self.joy_prev_buttons = list(self.joy.buttons)
+
+        A = P["axes"]
+        ax = lambda name: self.joy_axis(A[name]) if A[name] >= 0 else 0.0  # noqa: E731
+        # base-frame velocities; stick up / left are positive in the Joy message
+        v = np.array([P["sign"]["x"] * ax("x"), P["sign"]["y"] * ax("y"),
+                      self.joy_trigger(A["z_up"]) - self.joy_trigger(A["z_down"])])
+        v = np.clip(v, -1.0, 1.0) * P["max_lin_vel"] * self.speed
+        w = np.zeros(3)
+        if self.use_rotation:
+            b = self.joy.buttons
+            btn = lambda name: float(0 <= P["buttons"][name] < len(b) and b[P["buttons"][name]])  # noqa: E731
+            w = np.array([btn("roll_pos") - btn("roll_neg"),
+                          P["sign"]["pitch"] * ax("pitch"), P["sign"]["yaw"] * ax("yaw")])
+            w = np.clip(w, -1.0, 1.0) * P["max_ang_vel"] * self.speed
+
+        with self.lock:
+            if not self.engaged or self.ik_pending:
+                return
+            if not v.any() and not w.any():
+                return  # hold: the robot keeps the last command
+            T_next = np.eye(4)
+            T_next[:3, 3] = np.clip(self.T_cmd[:3, 3] + v * self.dt, self.ws_min, self.ws_max)
+            # rotation about the TCP point, axes of the base frame
+            T_next[:3, :3] = rotvec_to_matrix(w * self.dt) @ self.T_cmd[:3, :3]
             self.publish_target(T_next)
             self.request_ik(T_next)
 
@@ -399,7 +522,12 @@ class TeleopNode(Node):
             want_closed = True
         elif grip > G["open_above"]:
             want_closed = False
-        if want_closed is None or want_closed == self.gripper_closed or self.gripper_busy:
+        if want_closed is not None:
+            self.command_gripper(want_closed)
+
+    def command_gripper(self, want_closed):
+        G = self.cfg["gripper"]
+        if want_closed == self.gripper_closed or self.gripper_busy:
             return
         cli = self.grasp_cli if want_closed else self.move_cli
         if not cli.server_is_ready():
@@ -420,6 +548,7 @@ class TeleopNode(Node):
             goal.speed = G["speed"]
         self.gripper_busy = True
         self.gripper_closed = want_closed
+        self.gripper_cmd_pub.publish(Float32(data=1.0 if want_closed else 0.0))
         what = f"GRASP ({G['grasp_force']:.0f} N)" if want_closed else f"OPEN ({G['open_width'] * 100:.0f} cm)"
         self.get_logger().info(f"Gripper -> {what}")
 
@@ -526,6 +655,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=str(HERE / "config" / "teleop.yaml"))
     ap.add_argument("--fake-leader", action="store_true", help="synthetic leader motion")
+    ap.add_argument("--gamepad", action="store_true", help="PS5 / game controller instead of the SO101 leader")
     ap.add_argument("--engage", action="store_true", help="engage immediately (testing)")
     args, ros_args = ap.parse_known_args()
 
@@ -534,6 +664,7 @@ def main():
     cfg["leader"]["calibration_file"] = str(calib if calib.is_absolute() else HERE / calib)
     if args.fake_leader:
         cfg["leader"]["fake"] = True
+    cfg["input"] = "gamepad" if args.gamepad else "leader"
 
     rclpy.init(args=ros_args)
     node = TeleopNode(cfg)
@@ -555,7 +686,8 @@ def main():
         if rclpy.ok():
             raise
     finally:
-        node.leader.close()
+        if node.leader is not None:
+            node.leader.close()
         rclpy.try_shutdown()
 
 

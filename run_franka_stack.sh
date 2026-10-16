@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 mkdir -p logs
 LOG="logs/franka_stack_$(date +%Y%m%d_%H%M%S).log"
 echo ">>> full output is also saved to $LOG"
-source /opt/ros/lyrical/setup.bash
+source /opt/ros/jazzy/setup.bash
 if [ "$1" = "real" ]; then
   IP="${2:?usage: $0 real <robot_ip>}"
   echo ">>> REAL ROBOT at $IP"

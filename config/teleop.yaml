@@ -23,7 +23,7 @@ franka:
 
 control:
   rate_hz: 30.0
-  position_scale: 1.5            # franka metres per leader metre
+  position_scale: 2.0            # franka metres per leader metre
   track_orientation: true        # 'r' toggles; off = keep franka TCP orientation fixed
   rotation_scale: 1.0
   leader_to_franka_rpy: [0.0, 0.0, 0.0]   # rotation of leader base frame into franka base frame (both x fwd, z up)
@@ -51,3 +51,31 @@ gripper:
   grasp_epsilon_inner: 0.005     # ... accepted object width is [grasp_width - inner, grasp_width + outer]
   grasp_epsilon_outer: 0.08      #     = 0..8 cm, i.e. any object counts as grasped
   grasp_force: 20.0              # N
+
+# ./run_teleop.sh --gamepad : PS5 (DualSense) / any SDL game controller instead of the SO101 leader.
+# Velocity control of the TCP in panda_link0. Indices = SDL GameController layout published by
+# joy's game_controller_node; check with: ros2 topic echo /joy
+gamepad:
+  topic: /joy
+  timeout: 0.5                   # s without /joy messages before checking that the controller is still there
+  device_name: DualSense         # substring of the controller name in /proc/bus/input/devices (USB + Bluetooth)
+  max_lin_vel: 0.10              # m/s at full stick (x speed factor, d-pad up/down 0.1..1.0)
+  max_ang_vel: 0.5               # rad/s
+  axes:                          # -1 = unused
+    x: 1                         # left stick up/down    -> +x / -x (away from / towards the base)
+    y: 0                         # left stick left/right -> +y / -y
+    yaw: 2                       # right stick left/right -> rotate about base z
+    pitch: 3                     # right stick up/down    -> rotate about base y
+    z_up: 4                      # L2 trigger
+    z_down: 5                    # R2 trigger
+  sign: {x: 1.0, y: -1.0, yaw: 1.0, pitch: -1.0}   # flip a direction here
+  buttons:
+    engage: 6                    # OPTIONS  engage / pause
+    home: 4                      # CREATE   MoveIt to the ready pose
+    grasp: 0                     # CROSS    close (grasp)
+    open: 1                      # CIRCLE   open
+    orientation: 3               # TRIANGLE rotation control on/off
+    roll_neg: 9                  # L1       rotate about base x
+    roll_pos: 10                 # R1
+    speed_up: 11                 # D-pad up
+    speed_down: 12               # D-pad down

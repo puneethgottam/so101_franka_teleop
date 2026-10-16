@@ -1,0 +1,41 @@
+output_dir: data/raw              # raw episodes (relative = project dir); convert with tools/to_lerobot.py
+fps: 30                           # sampling rate of each episode
+task: "do the task"               # default language instruction; override with --task or the 't' key
+
+topics:
+  joint_states: /joint_states
+  joint_command: /panda_arm_controller/joint_trajectory   # streamed teleop joint targets
+  target_pose: /so101_franka_teleop/target_pose
+  gripper_command: /so101_franka_teleop/gripper_command
+  status: /so101_franka_teleop/status
+
+franka:
+  base_frame: panda_link0
+  ee_link: panda_hand_tcp
+  joint_names: [panda_joint1, panda_joint2, panda_joint3, panda_joint4, panda_joint5, panda_joint6, panda_joint7]
+  finger_joints: [panda_finger_joint1, panda_finger_joint2]   # width = sum of both
+
+# RGB cameras, saved as observation.images.<name>. Empty list = no images.
+# Either a USB camera read directly (device:) or a ROS image topic (topic:).
+cameras:
+  - name: front                   # HDMI/USB capture camera, scene view of the table
+    device: /dev/v4l/by-id/usb-HDMI_3.0_USB_Camera_HDMI_USB_Camera_2023121018-video-index0
+    fourcc: MJPG
+    capture_width: 1280           # what the camera delivers
+    capture_height: 720
+    capture_fps: 30
+    width: 640                    # saved size (resized); omit = keep capture size
+    height: 360
+# Orbbec via ROS: ros2 launch orbbec_camera gemini_330_series.launch.py  (pick your model's launch file)
+#  - name: wrist
+#    topic: /camera/color/image_raw    # compressed: true for .../image_raw/compressed
+#    width: 640
+#    height: 480
+max_image_age: 0.2                # s, warn when a camera frame is older than this at sample time
+jpeg_quality: 95
+
+# gamepad buttons for recording (same /joy as ./run_teleop.sh --gamepad); -1 = off
+gamepad:
+  topic: /joy
+  start_stop_button: 2            # SQUARE   start / stop+save
+  discard_button: 13              # D-pad left  discard current episode

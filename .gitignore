@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 logs/
 tools/franka_recover
+data/
+.venv-lerobot/

@@ -1,0 +1,12 @@
+# Sim only: mock Franka Hand controller driven by tools/sim_gripper.py (ParallelGripperCommand).
+# Replaces moveit_resources_panda_moveit_config's panda_hand_controller, which on Jazzy is the
+# deprecated position_controllers/GripperActionController (GripperCommand action, wrong type).
+controller_manager:
+  ros__parameters:
+    panda_hand_controller:
+      type: parallel_gripper_action_controller/GripperActionController
+
+panda_hand_controller:
+  ros__parameters:
+    type: parallel_gripper_action_controller/GripperActionController
+    joint: panda_finger_joint1

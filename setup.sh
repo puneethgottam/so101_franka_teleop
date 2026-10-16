@@ -3,10 +3,10 @@
 #   ./setup.sh
 set -e
 cd "$(dirname "$0")"
-ROS=/opt/ros/lyrical
+ROS=/opt/ros/jazzy
 
-echo "== checking ROS 2 Lyrical + packages"
-[ -f $ROS/setup.bash ] || { echo "!! ROS 2 Lyrical not found in $ROS"; exit 1; }
+echo "== checking ROS 2 Jazzy + packages"
+[ -f $ROS/setup.bash ] || { echo "!! ROS 2 Jazzy not found in $ROS"; exit 1; }
 missing=()
 for p in franka_moveit_config franka_description franka_hardware franka_gripper franka_msgs \
          franka_robot_state_broadcaster libfranka moveit_ros_move_group pymoveit2 \
@@ -16,7 +16,7 @@ for p in franka_moveit_config franka_description franka_hardware franka_gripper 
 done
 if [ ${#missing[@]} -gt 0 ]; then
   echo "!! missing ROS packages: ${missing[*]}"
-  echo "   install e.g.: sudo apt install $(printf 'ros-lyrical-%s ' "${missing[@]//_/-}")"
+  echo "   install e.g.: sudo apt install $(printf 'ros-jazzy-%s ' "${missing[@]//_/-}")"
   exit 1
 fi
 
